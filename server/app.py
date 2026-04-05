@@ -31,10 +31,10 @@ except Exception as e:  # pragma: no cover
 
 try:
     from ..models import SupplyChainAction, SupplyChainObservation
-    from .environment import SupplyChainEnvironment
-except ModuleNotFoundError:
+    from .my_env_environment import SupplyChainEnvironment
+except ImportError:
     from models import SupplyChainAction, SupplyChainObservation
-    from server.environment import SupplyChainEnvironment
+    from server.my_env_environment import SupplyChainEnvironment
 
 
 # Create the app — increase max_concurrent_envs for parallel training runs

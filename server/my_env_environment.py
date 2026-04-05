@@ -24,11 +24,11 @@ from openenv.core.env_server.types import State
 try:
     from ..models import SupplyChainAction, SupplyChainObservation
     from .demand_model import SKU_CONFIG, DemandModel
-    from .supplier_model import SUPPLIER_CONFIG, SupplierModel
+    from .supplier_models import SUPPLIER_CONFIG, SupplierModel
 except ImportError:
     from models import SupplyChainAction, SupplyChainObservation
     from server.demand_model import SKU_CONFIG, DemandModel
-    from server.supplier_model import SUPPLIER_CONFIG, SupplierModel
+    from server.supplier_models import SUPPLIER_CONFIG, SupplierModel
 
 # ── Task configuration ────────────────────────────────────────────────────────
 
@@ -547,7 +547,7 @@ class SupplyChainEnvironment(Environment):
             }, REWARD_WAREHOUSE_OVERFLOW_PENALTY
 
         # Check cash constraint
-        price_per_unit = SKU_CONFIG[sku]["unit_cost"] * __import__("server.supplier_model", fromlist=["SUPPLIER_CONFIG"]).SUPPLIER_CONFIG[supplier_id]["price_multiplier"] if False else None
+        price_per_unit = SKU_CONFIG[sku]["unit_cost"] * __import__("server.supplier_models", fromlist=["SUPPLIER_CONFIG"]).SUPPLIER_CONFIG[supplier_id]["price_multiplier"] if False else None
         quotes = self._supplier_model.get_quotes(sku, quantity)
         if supplier_id not in quotes:
             return {"error": f"Supplier {supplier_id} not available."}, 0.0
