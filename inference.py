@@ -44,7 +44,7 @@ RESOURCE CONSTRAINTS
     - Runtime:  < 20 minutes total
     - Hardware: 2 vCPU, 8 GB RAM
     - MAX_STEPS is set conservatively to stay well within the time budget.
-      Each LLM call ~ 2–4 s → 60 steps × 3 s = ~3 min per task safely.
+      Each LLM call ~ 2-4 s -> 60 steps x 3 s = ~3 min per task safely.
 """
 
 import asyncio
@@ -52,11 +52,15 @@ import json
 import os
 import textwrap
 from typing import Any, Dict, List, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from openai import OpenAI
 
-from supply_chain_env import SupplyChainAction, SupplyChainEnv
-from supply_chain_env.server.mcp_tools import SUPPLY_CHAIN_TOOLS
+from models import SupplyChainAction
+from client import SupplyChainEnv
+from server.mcp_tools import SUPPLY_CHAIN_TOOLS
 
 IMAGE_NAME = os.getenv("IMAGE_NAME")
 API_KEY    = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
@@ -67,32 +71,39 @@ TASK_NAME    = os.getenv("SUPPLY_CHAIN_TASK",      "easy")
 BENCHMARK    = os.getenv("SUPPLY_CHAIN_BENCHMARK", "supply_chain_env")
 SEED         = int(os.getenv("SUPPLY_CHAIN_SEED",  "42"))
 
-# ── Resource-aware step budget ────────────────────────────────────────────────
-# Runtime limit: 20 min. Each LLM call takes ~2–4 s on a remote endpoint.
-# easy=30d, medium=60d, hard=90d — agent needs ~2 tool calls per day.
-# Budget per task: easy=70, medium=130, hard=190 — all fit in ~10 min worst case.
+# Resource-aware step budget — stays well within 20 min on remote endpoints
 _STEP_BUDGETS = {"easy": 70, "medium": 130, "hard": 190}
 MAX_STEPS = int(os.getenv("MAX_STEPS", str(_STEP_BUDGETS.get(TASK_NAME, 130))))
 
 TEMPERATURE = 0.7
-MAX_TOKENS  = 256   # kept small to reduce latency on 2-vCPU inference servers
+MAX_TOKENS  = 256
 SUCCESS_SCORE_THRESHOLD = 0.5
 
-SYSTEM_PROMPT = textwrap.dedent(
-    """
-    You are a supply chain manager. Maximise service level, minimise costs.
-    Use the 12 MCP tools each step. Decision order every step:
-    1. observe_inventory  2. observe_disruptions  3. get_demand_forecast
-    4. get_supplier_quotes  5. place_order (if needed)
+# ── FIX 1: System prompt now tells agent to act, not just observe ─────────────
 
-    Rules:
-    - Prefer Supplier Alpha (cheap, reliable). Use Gamma only in emergencies.
-    - Keep warehouse 60-85% full. Never go cash-negative.
-    - SKU-D is perishable — order small quantities frequently.
-    - During disruptions: raise safety stock, switch suppliers immediately.
-    - Always set 'reason' field when placing orders.
-    """
-).strip()
+SYSTEM_PROMPT = textwrap.dedent("""
+    You are a supply chain manager. Your goal: maximise fill rate, minimise costs.
+
+    IMPORTANT — only call ONE tool per step. Do NOT repeat the same tool consecutively
+    unless the situation has changed. After observing, act — do not just observe again.
+
+    Recommended flow each day:
+      Step 1: observe_inventory         (check stock levels)
+      Step 2: get_demand_forecast       (check upcoming demand)
+      Step 3: place_order if needed     (order ONLY if on_hand < reorder_point)
+      Step 4: observe_disruptions       (check for supply issues)
+      Repeat next day.
+
+    Ordering rules:
+    - Only order if on_hand + in_transit < reorder_point + safety_stock.
+    - Order quantity = (reorder_point + safety_stock) - on_hand - in_transit.
+    - NEVER order if warehouse is above 85% full.
+    - Use Supplier Alpha always (cheapest, most reliable).
+    - Always include a 'reason' when placing orders.
+
+    DO NOT call get_supplier_quotes or check_warehouse_capacity every single step —
+    only call them when you are about to place an order.
+""").strip()
 
 
 # ── Mandatory stdout logging ──────────────────────────────────────────────────
@@ -120,38 +131,54 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 # ── Prompt helpers ────────────────────────────────────────────────────────────
 
+# ── FIX 2: format_observation now diagnoses state and tells agent what to do ──
+
 def format_observation(obs: Any, step: int) -> str:
     """
-    Format SupplyChainObservation into a concise user prompt for the LLM.
-    Kept intentionally short to reduce token usage on memory-constrained hardware.
+    Build a concise user prompt from the current observation.
+    Explicitly tells the agent what to do next based on state —
+    reduces the chance of looping on the same tool repeatedly.
     """
     lines = [
-        f"Day {obs.current_day} | Step {step} | Cash: {obs.cash_balance:,.0f} INR"
-        f" | Warehouse: {obs.warehouse_utilization:.0%} | SvcLvl: {obs.service_level:.0%}"
-        f" | Disruption: {obs.disruption_active}",
+        f"=== Day {obs.current_day} | Step {step} ===",
+        f"Cash: {obs.cash_balance:,.0f} INR | Warehouse: {obs.warehouse_utilization:.0%} used"
+        f" | Service level: {obs.service_level:.0%} | Disruption: {obs.disruption_active}",
     ]
 
     if obs.disruption_active and obs.disruption_details:
         d = obs.disruption_details
         lines.append(
-            f"DISRUPTION: supplier={d.get('supplier_id')} "
+            f"DISRUPTION ACTIVE: supplier={d.get('supplier_id')} "
             f"severity={d.get('severity')} ends Day {d.get('end_day')}"
         )
 
-    # One line per SKU — all critical info on a single row
+    lines.append("\nInventory status:")
+    needs_order = []
     for sku, qty in obs.inventory.items():
         fr  = obs.fill_rate.get(sku, 0)
         rp  = obs.reorder_points.get(sku, 0)
         ss  = obs.safety_stock.get(sku, 0)
-        int = [o for o in obs.pending_orders if o["sku"] == sku]
-        in_transit_qty = sum(o["delivered_quantity"] for o in int)
-        lines.append(
-            f"{sku}: on_hand={qty} in_transit={in_transit_qty}"
-            f" fill={fr:.0%} reorder={rp} safety={ss}"
+        in_transit = sum(
+            o["delivered_quantity"] for o in obs.pending_orders if o["sku"] == sku
         )
+        total_available = qty + in_transit
+        status = "LOW - ORDER NOW" if total_available < rp else "OK"
+        lines.append(
+            f"  {sku}: on_hand={qty} in_transit={in_transit} total={total_available}"
+            f" | reorder_pt={rp} safety={ss} | fill={fr:.0%} | {status}"
+        )
+        if total_available < rp:
+            order_qty = max(0, (rp + ss) - total_available)
+            needs_order.append(f"{sku} needs ~{order_qty} units")
 
-    # Last tool result — capped at 300 chars to prevent prompt bloat
-    lines.append(f"Last: {obs.tool_name_called} -> {json.dumps(obs.tool_result)[:300]}")
+    if needs_order:
+        lines.append(f"\nACTION NEEDED: {', '.join(needs_order)}")
+        lines.append("-> Call place_order now. Use supplier=alpha.")
+    else:
+        lines.append("\nAll SKUs sufficiently stocked. Observe or adjust policy if needed.")
+
+    lines.append(f"\nLast tool: {obs.tool_name_called}")
+    lines.append(f"Last result: {json.dumps(obs.tool_result)[:250]}")
 
     return "\n".join(lines)
 
@@ -226,7 +253,7 @@ def get_agent_action(
         messages.append(response.choices[0].message.model_dump())
         action = parse_tool_call(response)
 
-        # Append tool result so the model sees its own call history next step
+        # Feed the tool result back into history so model sees its own outputs
         if response.choices[0].message.tool_calls:
             tc_id = response.choices[0].message.tool_calls[0].id
             messages.append({
@@ -258,8 +285,8 @@ async def main() -> None:
     score   = 0.0
     success = False
 
-    # Hard wall-clock guard: abort gracefully before the 20-min runtime limit
-    TIMEOUT_SECONDS = 18 * 60   # 18 min — leaves 2 min buffer for teardown
+    # 18-min hard timeout — leaves 2-min buffer before the 20-min limit
+    TIMEOUT_SECONDS = 18 * 60
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
@@ -275,10 +302,9 @@ async def main() -> None:
             if result.done:
                 break
 
-            # Abort if we are approaching the 20-min wall-clock limit
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed > TIMEOUT_SECONDS:
-                print(f"[DEBUG] Timeout guard triggered at step {step} ({elapsed:.0f}s elapsed)", flush=True)
+                print(f"[DEBUG] Timeout guard at step {step} ({elapsed:.0f}s)", flush=True)
                 break
 
             obs = result.observation
@@ -286,19 +312,17 @@ async def main() -> None:
 
             result = await asyncio.wait_for(env.step(action), timeout=30)
 
-            reward = result.reward or 0.0
-            done   = result.done
-            error  = None
-
-            rewards.append(reward)
+            reward      = result.reward or 0.0
+            done        = result.done
             steps_taken = step
+            rewards.append(reward)
 
             log_step(
                 step=step,
                 action=action_to_str(action),
                 reward=reward,
                 done=done,
-                error=error,
+                error=None,
             )
 
             if done:
@@ -309,7 +333,7 @@ async def main() -> None:
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except asyncio.TimeoutError:
-        print("[DEBUG] Hard timeout hit — forcing episode end", flush=True)
+        print("[DEBUG] Hard timeout — forcing episode end", flush=True)
 
     except Exception as exc:
         print(f"[DEBUG] Episode error: {exc}", flush=True)
@@ -317,9 +341,10 @@ async def main() -> None:
     finally:
         try:
             await env.close()
-        except Exception as e:
-            print(f"[DEBUG] env.close() error (container cleanup): {e}", flush=True)
+        except Exception:
+            pass
 
+        # FIX 3: Exactly ONE [END] line — env.close() errors are silenced above
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 

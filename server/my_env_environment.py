@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 """
 Supply Chain Environment Implementation.
 
@@ -9,7 +15,7 @@ use enterprise software such as SAP or Oracle SCM.
 Three graded tasks of escalating difficulty:
     easy   — Single-SKU (SKU-C), 30 days, 1 supplier, no disruptions.
     medium — All 5 SKUs, 60 days, 3 suppliers, 1 surprise disruption.
-    hard   — All 6 SKUs, 90 days, 3 suppliers, 2–3 disruptions, demand surge,
+    hard   — All 6 SKUs, 90 days, 3 suppliers, 2-3 disruptions, demand surge,
               cash constraint, reliability shock, new-SKU launch on Day 60.
 """
 
@@ -38,8 +44,8 @@ TASK_CONFIG: Dict[str, Dict] = {
         "active_skus": ["SKU-C"],
         "active_suppliers": ["alpha"],
         "warehouse_capacity": 2000,
-        "monthly_cash_limit": None,          # unconstrained
-        "disruptions": [],                    # none
+        "monthly_cash_limit": None,
+        "disruptions": [],
         "surge_days": None,
         "new_sku_launch_day": None,
         "reliability_shock": None,
@@ -49,8 +55,8 @@ TASK_CONFIG: Dict[str, Dict] = {
         "active_skus": ["SKU-A", "SKU-B", "SKU-C", "SKU-D", "SKU-E"],
         "active_suppliers": ["alpha", "beta", "gamma"],
         "warehouse_capacity": 10000,
-        "monthly_cash_limit": 1_500_000,     # INR per month
-        "disruptions": 1,                    # 1 disruption at random day 15–45
+        "monthly_cash_limit": 1_500_000,
+        "disruptions": 1,
         "surge_days": None,
         "new_sku_launch_day": None,
         "reliability_shock": None,
@@ -60,25 +66,22 @@ TASK_CONFIG: Dict[str, Dict] = {
         "active_skus": ["SKU-A", "SKU-B", "SKU-C", "SKU-D", "SKU-E"],
         "active_suppliers": ["alpha", "beta", "gamma"],
         "warehouse_capacity": 10000,
-        "monthly_cash_limit": 1_200_000,     # tighter than medium
-        "disruptions": 3,                    # 2–3 disruptions at random intervals
-        "surge_days": (40, 44, ["SKU-A", "SKU-D"], 3.0),   # tripled demand
-        "new_sku_launch_day": 60,            # SKU-F launched on Day 60
-        "reliability_shock": ("beta", 0.45, 45),   # supplier, new_reliability, shock_day
+        "monthly_cash_limit": 1_200_000,
+        "disruptions": 3,
+        "surge_days": (40, 44, ["SKU-A", "SKU-D"], 3.0),
+        "new_sku_launch_day": 60,
+        "reliability_shock": ("beta", 0.45, 45),
     },
 }
 
-# Starting inventory = N days of expected demand per SKU
 STARTING_INVENTORY_DAYS = 10
 
-# Initial cash balance per task
 STARTING_CASH: Dict[str, float] = {
     "easy": 5_000_000.0,
     "medium": 3_000_000.0,
     "hard": 2_500_000.0,
 }
 
-# Reward weights
 REWARD_FILL_PER_UNIT_WEIGHT: Dict[str, float] = {
     "SKU-A": 0.25, "SKU-B": 0.30, "SKU-C": 0.15,
     "SKU-D": 0.20, "SKU-E": 0.10, "SKU-F": 0.08,
@@ -123,27 +126,22 @@ class SupplyChainEnvironment(Environment):
         self._day: int = 1
         self._done: bool = False
 
-        # Sub-models
         self._demand_model: Optional[DemandModel] = None
         self._supplier_model: Optional[SupplierModel] = None
 
-        # Inventory & logistics
         self._inventory: Dict[str, int] = {}
         self._pending_orders: List[Dict[str, Any]] = []
         self._reorder_points: Dict[str, int] = {}
         self._safety_stock: Dict[str, int] = {}
 
-        # Financials
         self._cash_balance: float = 0.0
         self._month_spend: float = 0.0
         self._month_start_day: int = 1
 
-        # Cost accumulators
         self._total_carrying_cost: float = 0.0
         self._total_stockout_cost: float = 0.0
         self._total_procurement_cost: float = 0.0
 
-        # Performance tracking
         self._daily_demand: Dict[str, List[int]] = {}
         self._daily_filled: Dict[str, List[int]] = {}
         self._daily_inventory: Dict[str, List[int]] = {}
@@ -152,12 +150,10 @@ class SupplyChainEnvironment(Environment):
         self._stockout_history: Dict[str, int] = {}
         self._total_expired: Dict[str, int] = {}
 
-        # Disruption tracking
         self._active_disruptions: List[Dict[str, Any]] = []
         self._episode_disruptions: List[Dict[str, Any]] = []
         self._disruption_schedule: List[Dict[str, Any]] = []
 
-        # Config snapshot
         self._cfg: Dict[str, Any] = {}
         self._active_skus: List[str] = []
         self._order_counter: int = 0
@@ -184,10 +180,8 @@ class SupplyChainEnvironment(Environment):
         self._done = False
         self._order_counter = 0
 
-        # Determine active SKUs
         self._active_skus = list(self._cfg["active_skus"])
 
-        # Initialise sub-models
         self._demand_model = DemandModel(
             active_skus=self._active_skus,
             seed=seed,
@@ -195,7 +189,6 @@ class SupplyChainEnvironment(Environment):
         )
         self._supplier_model = SupplierModel(seed=seed)
 
-        # Inventory
         self._inventory = {
             sku: SKU_CONFIG[sku]["base_demand"] * STARTING_INVENTORY_DAYS
             for sku in self._active_skus
@@ -210,12 +203,10 @@ class SupplyChainEnvironment(Environment):
         }
         self._pending_orders = []
 
-        # Financials
         self._cash_balance = STARTING_CASH[task_id]
         self._month_spend = 0.0
         self._month_start_day = 1
 
-        # Cost & performance accumulators
         self._total_carrying_cost = 0.0
         self._total_stockout_cost = 0.0
         self._total_procurement_cost = 0.0
@@ -227,12 +218,10 @@ class SupplyChainEnvironment(Environment):
         self._stockout_history = {sku: 0 for sku in self._active_skus}
         self._total_expired = {sku: 0 for sku in self._active_skus}
 
-        # Build disruption schedule
         self._disruption_schedule = self._build_disruption_schedule()
         self._active_disruptions = []
         self._episode_disruptions = []
 
-        # Run Day 1 tick so the initial observation is meaningful
         self._tick_day()
 
         return self._build_observation(
@@ -243,9 +232,6 @@ class SupplyChainEnvironment(Environment):
     def step(self, action: SupplyChainAction) -> SupplyChainObservation:
         """
         Execute one MCP tool call and advance the simulation by one step.
-
-        The simulation ticks one day forward after every agent action,
-        providing a dense reward signal throughout the episode.
 
         Args:
             action: SupplyChainAction specifying the tool to call and its parameters.
@@ -262,19 +248,15 @@ class SupplyChainEnvironment(Environment):
 
         self._state.step_count += 1
 
-        # Dispatch the MCP tool call
         tool_result, step_reward = self._dispatch_tool(action)
 
-        # Advance simulation by one day
         self._day += 1
         if self._day <= self._cfg["duration_days"]:
             self._tick_day()
 
-        # Check episode termination
         if self._day > self._cfg["duration_days"]:
             self._done = True
 
-        # Terminal reward and grade score
         grade_score = None
         if self._done:
             grade_score = self._grade()
@@ -310,34 +292,23 @@ class SupplyChainEnvironment(Environment):
         """
         cfg = self._cfg
 
-        # 1. Receive arriving orders
         self._receive_orders()
-
-        # 2. Fulfil demand
         self._fulfil_demand()
-
-        # 3. Expire perishables
         self._expire_perishables()
-
-        # 4. Holding cost
         self._charge_holding_costs()
 
-        # 5. Monthly budget roll
         if self._day - self._month_start_day >= 30:
             self._month_spend = 0.0
             self._month_start_day = self._day
 
-        # 6. Disruption events
         self._process_disruption_schedule()
 
-        # 7. Hard-task events
         if cfg.get("new_sku_launch_day") and self._day == cfg["new_sku_launch_day"]:
             self._launch_new_sku("SKU-F")
         shock = cfg.get("reliability_shock")
         if shock and self._day == shock[2]:
             self._supplier_model.degrade_supplier_permanently(shock[0], shock[1])
 
-        # 8. Snapshots
         self._record_snapshots()
 
     def _receive_orders(self) -> None:
@@ -351,9 +322,6 @@ class SupplyChainEnvironment(Environment):
                     space = self._cfg["warehouse_capacity"] - self._total_inventory()
                     received = min(qty, space)
                     self._inventory[sku] += received
-                    if received < qty:
-                        # Overflow: discard excess (already penalised at order time)
-                        pass
             else:
                 still_pending.append(order)
         self._pending_orders = still_pending
@@ -383,14 +351,11 @@ class SupplyChainEnvironment(Environment):
             if not cfg["perishable"]:
                 continue
             expiry = cfg["expiry_days"]
-            # Simple model: units older than expiry_days are discarded
-            # We track this via a proportional heuristic (full model would track batches)
-            avg_age_days = expiry / 2  # conservative estimate
+            avg_age_days = expiry / 2
             if avg_age_days >= expiry:
                 expired = self._inventory.get(sku, 0)
                 self._inventory[sku] = 0
                 self._total_expired[sku] = self._total_expired.get(sku, 0) + expired
-            # Partial expiry: discard fraction older than expiry
             days_in_episode = self._day
             if days_in_episode > expiry:
                 excess_fraction = min(0.05, (days_in_episode - expiry) / (expiry * 10))
@@ -546,21 +511,21 @@ class SupplyChainEnvironment(Environment):
                 "penalty": REWARD_WAREHOUSE_OVERFLOW_PENALTY,
             }, REWARD_WAREHOUSE_OVERFLOW_PENALTY
 
-        # Check cash constraint
-        price_per_unit = SKU_CONFIG[sku]["unit_cost"] * __import__("server.supplier_models", fromlist=["SUPPLIER_CONFIG"]).SUPPLIER_CONFIG[supplier_id]["price_multiplier"] if False else None
+        # Get quotes and check price
         quotes = self._supplier_model.get_quotes(sku, quantity)
         if supplier_id not in quotes:
             return {"error": f"Supplier {supplier_id} not available."}, 0.0
         price_per_unit = quotes[supplier_id]["price_per_unit"]
         total_cost = price_per_unit * quantity
 
+        # Check monthly cash limit
         monthly_limit = self._cfg.get("monthly_cash_limit")
         if monthly_limit and (self._month_spend + total_cost) > monthly_limit:
             return {
                 "error": f"Order rejected: monthly cash limit exceeded. Remaining this month: {monthly_limit - self._month_spend:.0f} INR.",
             }, 0.0
 
-        # Resolve order
+        # Resolve order with supplier reliability
         arrival_day, delivered_qty = self._supplier_model.resolve_order(
             sku, supplier_id, quantity, self._day
         )
@@ -584,29 +549,47 @@ class SupplyChainEnvironment(Environment):
         self._total_procurement_cost += total_cost
 
         # ── Reward shaping ────────────────────────────────────────────────────
+        disruption_active = len(self._active_disruptions) > 0
+
+        # ── PANIC ORDER CHECK ─────────────────────────────────────────────────
+        # Gamma used without any active disruption = panic order.
+        # Return immediately with ONLY the penalty — no positive bonuses can
+        # offset it. This makes the negative signal unambiguous for RL training.
+        if supplier_id == "gamma" and not disruption_active:
+            return {
+                "order_id": order_id,
+                "sku": sku,
+                "supplier_id": supplier_id,
+                "requested_quantity": quantity,
+                "delivered_quantity": delivered_qty,
+                "price_per_unit": price_per_unit,
+                "total_cost": round(total_cost, 2),
+                "eta_day": arrival_day,
+                "cash_remaining": round(self._cash_balance, 2),
+                "reason_logged": action.reason,
+                "warning": "Panic order penalty applied — Gamma used without active disruption.",
+            }, REWARD_PANIC_ORDER_PENALTY   # always -0.3, nothing added
+
+        # ── NORMAL ORDER REWARDS ──────────────────────────────────────────────
+        # Only reached when supplier is alpha or beta, or gamma during disruption.
         reward = 0.0
 
-        # Proactive order bonus: ordered with enough days of stock remaining
+        # Proactive bonus: still had enough days of stock when ordering
         avg_demand = self._demand_model.average_daily_demand(sku)
         days_of_stock = self._inventory.get(sku, 0) / max(1, avg_demand)
         lead_time = quotes[supplier_id]["lead_time_days"]
         if days_of_stock >= lead_time:
             reward += REWARD_PROACTIVE_ORDER_BONUS
 
-        # Panic order penalty: using Gamma without a disruption active
-        disruption_active = len(self._active_disruptions) > 0
-        if supplier_id == "gamma" and not disruption_active:
-            reward += REWARD_PANIC_ORDER_PENALTY
-
-        # Disruption pre-emption bonus: heavy stock before disruption hits
+        # Disruption pre-emption: heavily stocked before disruption hit
         if disruption_active and self._inventory.get(sku, 0) > 2 * self._safety_stock.get(sku, 0):
             reward += REWARD_DISRUPTION_PREEMPTED_BONUS
 
-        # Supplier reliability bonus
-        reliable_choice = (supplier_id == "alpha") or (
-            supplier_id == "beta" and "alpha" not in self._cfg["active_suppliers"]
-        )
-        if reliable_choice:
+        # Reliability bonus: chose alpha (most reliable) or best available
+        # Gamma NEVER gets this bonus — even during a disruption it's a compromise
+        if supplier_id == "alpha":
+            reward += REWARD_SUPPLIER_RELIABILITY_BONUS
+        elif supplier_id == "beta" and "alpha" not in self._cfg["active_suppliers"]:
             reward += REWARD_SUPPLIER_RELIABILITY_BONUS
 
         return {
@@ -625,7 +608,6 @@ class SupplyChainEnvironment(Environment):
     def _tool_cancel_order(self, order_id: Optional[str], reason: Optional[str]) -> Dict:
         for i, order in enumerate(self._pending_orders):
             if order["order_id"] == order_id:
-                # Refund only if not yet shipped (heuristic: > 2 days until arrival)
                 if order["eta_day"] - self._day > 2:
                     refund = order["total_cost"]
                     self._cash_balance += refund
@@ -671,7 +653,7 @@ class SupplyChainEnvironment(Environment):
             if order["order_id"] == order_id:
                 if order["eta_day"] - self._day <= 1:
                     return {"error": f"Order {order_id} already arrives tomorrow."}, 0.0
-                premium = order["total_cost"] * 0.20    # 20 % expedite fee
+                premium = order["total_cost"] * 0.20
                 if self._cash_balance < premium:
                     return {"error": f"Insufficient cash to expedite. Required: {premium:.0f} INR."}, 0.0
                 self._cash_balance -= premium
@@ -786,10 +768,7 @@ class SupplyChainEnvironment(Environment):
             return self._grade_task_3()
 
     def _grade_task_1(self) -> float:
-        """
-        Score a single-SKU inventory control episode.
-        Returns float in [0.0, 1.0].
-        """
+        """Score a single-SKU inventory control episode. Returns float in [0.0, 1.0]."""
         score = 0.0
         sku = "SKU-C"
 
@@ -808,9 +787,6 @@ class SupplyChainEnvironment(Environment):
         avg_demand = self._demand_model.average_daily_demand(sku)
         lead_time = SKU_CONFIG[sku]["lead_time_max"]
         safety_buffer = 3
-        for order in self._pending_orders:
-            if order.get("sku") == sku:
-                continue
         for order in [o for o in self._pending_orders if o["sku"] == sku]:
             inv_at_order = self._inventory.get(sku, 0)
             days_stock = inv_at_order / max(1, avg_demand)
@@ -830,10 +806,7 @@ class SupplyChainEnvironment(Environment):
         return round(score, 4)
 
     def _grade_task_2(self) -> float:
-        """
-        Score a multi-SKU, multi-supplier episode with one disruption.
-        Returns float in [0.0, 1.0].
-        """
+        """Score a multi-SKU, multi-supplier episode with one disruption. Returns float in [0.0, 1.0]."""
         score = 0.0
         SKU_WEIGHTS = {"SKU-A": 0.25, "SKU-B": 0.30, "SKU-C": 0.15, "SKU-D": 0.20, "SKU-E": 0.10}
 
@@ -883,18 +856,13 @@ class SupplyChainEnvironment(Environment):
         return round(score, 4)
 
     def _grade_task_3(self) -> float:
-        """
-        Score a full-quarter supply chain management episode.
-        Returns float in [0.0, 1.0]. Seven components.
-        """
+        """Score a full-quarter supply chain management episode. Returns float in [0.0, 1.0]. Seven components."""
         score = 0.0
-        ALL_SKUS = ["SKU-A", "SKU-B", "SKU-C", "SKU-D", "SKU-E", "SKU-F"]
         SKU_REVENUE_WEIGHTS = {
             "SKU-A": 0.20, "SKU-B": 0.35, "SKU-C": 0.10,
             "SKU-D": 0.15, "SKU-E": 0.12, "SKU-F": 0.08,
         }
 
-        # Component 1: Quarter-wide service level (30 %)
         service_level = sum(
             SKU_REVENUE_WEIGHTS.get(sku, 0) * self._compute_fill_rate(sku)
             for sku in self._active_skus
@@ -902,16 +870,13 @@ class SupplyChainEnvironment(Environment):
         )
         score += service_level * 0.30
 
-        # Component 2: Total cost vs benchmark (25 %)
         benchmark_cost = self._compute_benchmark_cost()
         actual_cost = self._total_procurement_cost + self._total_carrying_cost + self._total_stockout_cost
         score += min(benchmark_cost / max(1, actual_cost), 1.0) * 0.25
 
-        # Component 3: Surge event handling (15 %)
         surge = self._cfg.get("surge_days")
         if surge:
             s_start, s_end, surge_skus, _ = surge
-            pre_window = range(max(1, s_start - 3), s_start)
             surge_demand_total = 0
             surge_filled_total = 0
             for sku in surge_skus:
@@ -925,7 +890,6 @@ class SupplyChainEnvironment(Environment):
         else:
             score += 0.15
 
-        # Component 4: Cash management (12 %)
         monthly_limit = self._cfg.get("monthly_cash_limit", float("inf"))
         cash_health = []
         for bal in self._daily_cash_balance:
@@ -938,7 +902,6 @@ class SupplyChainEnvironment(Environment):
                 cash_health.append(0.0)
         score += (mean(cash_health) if cash_health else 1.0) * 0.12
 
-        # Component 5: New SKU ramp-up (8 %)
         if "SKU-F" in self._active_skus:
             f_demand = sum(self._daily_demand.get("SKU-F", [0]))
             f_filled = sum(self._daily_filled.get("SKU-F", [0]))
@@ -947,7 +910,6 @@ class SupplyChainEnvironment(Environment):
         else:
             score += 0.08
 
-        # Component 6: Disruption resilience (7 %)
         if self._episode_disruptions:
             disruption_scores = []
             for disr in self._episode_disruptions:
@@ -966,8 +928,6 @@ class SupplyChainEnvironment(Environment):
         else:
             score += 0.07
 
-        # Component 7: Perishable waste (3 %)
-        sku_d_ordered = self._total_procurement_cost  # proxy — full model tracks per-SKU
         sku_d_expired = self._total_expired.get("SKU-D", 0)
         sku_d_purchased = sum(
             o["requested_quantity"] for o in self._pending_orders if o["sku"] == "SKU-D"
@@ -993,10 +953,7 @@ class SupplyChainEnvironment(Environment):
         return sum(filled) / max(1, sum(demand))
 
     def _compute_oracle_cost(self) -> float:
-        """
-        Theoretical minimum procurement cost: always choose cheapest supplier
-        that meets lead time requirements.
-        """
+        """Theoretical minimum procurement cost using cheapest available supplier."""
         total = 0.0
         for sku in self._active_skus:
             demand = sum(self._daily_demand.get(sku, []))
@@ -1008,7 +965,7 @@ class SupplyChainEnvironment(Environment):
         return total
 
     def _compute_benchmark_cost(self) -> float:
-        """95 % service level cost benchmark for the hard task."""
+        """95% service level cost benchmark for the hard task."""
         total = 0.0
         for sku in self._active_skus:
             demand = sum(self._daily_demand.get(sku, []))
