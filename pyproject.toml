@@ -1,0 +1,22 @@
+[project]
+name = "supply-chain-env"
+version = "1.0.0"
+description = "Supply Chain RL Environment — an OpenEnv-compliant MCP reinforcement learning environment for inventory management, supplier selection, and demand forecasting."
+requires-python = ">=3.10"
+dependencies = [
+    "openenv",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.0.0",
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+server = "supply_chain_env.server.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["supply_chain_env"]

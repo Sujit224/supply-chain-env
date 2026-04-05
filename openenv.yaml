@@ -1,0 +1,153 @@
+spec_version: 1
+
+name: supply-chain-env
+description: >
+  An LLM-based RL environment for multi-product supply chain management.
+  The agent manages inventory across 5 SKUs, 3 competing suppliers, and a
+  90-day simulated quarter — placing orders, selecting suppliers, forecasting
+  demand, and responding to disruptions via 12 MCP tool calls.
+
+type: mcp
+runtime: python
+app: server.app:app
+port: 8000
+
+tasks:
+  - id: easy
+    description: >
+      Single-SKU inventory control (SKU-C — raw material, steady demand).
+      30-day episode, 1 supplier (Alpha), no disruptions.
+      A basic reorder-point policy scores ~0.65; a well-tuned agent targets 0.90+.
+    duration_days: 30
+    active_skus: [SKU-C]
+    active_suppliers: [alpha]
+    disruptions: 0
+    grader: deterministic
+    score_range: [0.0, 1.0]
+
+  - id: medium
+    description: >
+      Multi-SKU inventory management across all 5 SKUs with supplier selection.
+      60-day episode, 3 competing suppliers, 1 surprise disruption (Day 15–45),
+      warehouse capacity constraint, and perishable SKU-D expiry.
+    duration_days: 60
+    active_skus: [SKU-A, SKU-B, SKU-C, SKU-D, SKU-E]
+    active_suppliers: [alpha, beta, gamma]
+    disruptions: 1
+    grader: deterministic
+    score_range: [0.0, 1.0]
+
+  - id: hard
+    description: >
+      Full-quarter supply chain management.
+      90-day episode with all 6 SKUs, 2–3 disruptions, a demand surge on Days 40–44
+      (3× demand for SKU-A and SKU-D), tight cash constraints, a mid-quarter supplier
+      reliability shock (Beta degrades to 45 % reliability on Day 45), and a new
+      SKU-F launched on Day 60 with zero demand history.
+      Unsolvable by any simple heuristic — requires genuine multi-horizon planning.
+    duration_days: 90
+    active_skus: [SKU-A, SKU-B, SKU-C, SKU-D, SKU-E]
+    active_suppliers: [alpha, beta, gamma]
+    disruptions: 3
+    surge_days: [40, 44]
+    surge_skus: [SKU-A, SKU-D]
+    surge_multiplier: 3.0
+    new_sku_launch_day: 60
+    reliability_shock:
+      supplier: beta
+      new_reliability: 0.45
+      shock_day: 45
+    grader: deterministic
+    score_range: [0.0, 1.0]
+
+skus:
+  SKU-A:
+    description: Fast-moving consumer good (FMCG)
+    base_demand: 120
+    lead_time_days: 3-5
+    unit_cost_inr: 120
+    perishable: false
+
+  SKU-B:
+    description: Electronics component
+    base_demand: 40
+    lead_time_days: 14-21
+    unit_cost_inr: 4500
+    perishable: false
+
+  SKU-C:
+    description: Raw material (steady demand)
+    base_demand: 200
+    lead_time_days: 7-10
+    unit_cost_inr: 800
+    perishable: false
+
+  SKU-D:
+    description: Perishable item (expires in 30 days)
+    base_demand: 95
+    lead_time_days: 1-2
+    unit_cost_inr: 60
+    perishable: true
+    expiry_days: 30
+
+  SKU-E:
+    description: Seasonal product
+    base_demand: 50
+    lead_time_days: 10-15
+    unit_cost_inr: 2200
+    perishable: false
+
+  SKU-F:
+    description: New SKU launched Day 60 with zero demand history
+    base_demand: 70
+    lead_time_days: 5-10
+    unit_cost_inr: 1500
+    perishable: false
+
+suppliers:
+  alpha:
+    characteristic: Reliable but slow — planned orders
+    price_multiplier: 1.00
+    reliability: 0.98
+    moq_units: high
+
+  beta:
+    characteristic: Balanced — general purpose
+    price_multiplier: 1.12
+    reliability: 0.85
+    moq_units: medium
+
+  gamma:
+    characteristic: Expensive but fast — emergency replenishment
+    price_multiplier: 1.25
+    reliability: 0.80
+    moq_units: low
+
+mcp_tools:
+  - observe_inventory
+  - get_demand_forecast
+  - get_demand_history
+  - get_supplier_quotes
+  - place_order
+  - cancel_order
+  - adjust_reorder_point
+  - adjust_safety_stock
+  - check_warehouse_capacity
+  - expedite_order
+  - transfer_between_skus
+  - observe_disruptions
+
+reward:
+  type: dense
+  components:
+    - demand_fulfilled: "+1.0 per unit filled × SKU margin weight"
+    - stockout_penalty: "−2× unit cost per unfilled unit"
+    - proactive_order_bonus: "+0.5 if ordered with lead-time days of stock remaining"
+    - panic_order_penalty: "−0.3 per Gamma order without active disruption"
+    - perishable_expiry: "−2.0 × units_expired × unit_cost"
+    - warehouse_overflow: "−5.0 flat penalty per rejected order"
+    - cash_breach: "−10.0 and episode terminates"
+    - disruption_preempted: "+3.0 if inventory > 2× safety_stock before disruption hits"
+    - carrying_cost: "−holding_cost_per_unit × units_in_warehouse (daily)"
+    - supplier_reliability_bonus: "+0.2 per order using the most reliable available supplier"
+  terminal: "grade_score × 50.0"
