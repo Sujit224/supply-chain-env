@@ -9,6 +9,7 @@ to disruptions — exactly as a real supply chain manager would.
 
 from openenv.core.env_server.types import Action, Observation
 from pydantic import Field
+from typing import Optional, Dict, List, Any
 
 
 class SupplyChainAction(Action):
