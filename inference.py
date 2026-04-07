@@ -52,9 +52,6 @@ import json
 import os
 import textwrap
 from typing import Any, Dict, List, Optional
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from openai import OpenAI
 
@@ -63,10 +60,11 @@ from client import SupplyChainEnv
 from server.mcp_tools import SUPPLY_CHAIN_TOOLS
 
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") # If you are using docker image 
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+
 TASK_NAME = os.getenv("SUPPLY_CHAIN_TASK", "easy")
 BENCHMARK = os.getenv("SUPPLY_CHAIN_BENCHMARK", "supply_chain_env")
 SEED         = int(os.getenv("SUPPLY_CHAIN_SEED",  "42"))
