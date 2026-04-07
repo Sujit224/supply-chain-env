@@ -6,7 +6,7 @@ MANDATORY
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
     HF_TOKEN       Your Hugging Face / API key.
-    IMAGE_NAME     The name of the local Docker image for the environment
+    LOCAL_IMAGE_NAME     The name of the local Docker image for the environment
                    (used with from_docker_image())
 
 - Defaults are set only for API_BASE_URL and MODEL_NAME
@@ -62,7 +62,7 @@ from models import SupplyChainAction
 from client import SupplyChainEnv
 from server.mcp_tools import SUPPLY_CHAIN_TOOLS
 
-IMAGE_NAME = os.getenv("IMAGE_NAME") # If you are using docker image 
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") # If you are using docker image 
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
@@ -288,8 +288,8 @@ async def main() -> None:
     try:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-        if IMAGE_NAME:
-            env = await SupplyChainEnv.from_docker_image(IMAGE_NAME)
+        if LOCAL_IMAGE_NAME:
+            env = await SupplyChainEnv.from_docker_image(LOCAL_IMAGE_NAME)
         else:
             env = SupplyChainEnv(base_url="http://localhost:7680")
     except Exception as e:

@@ -73,7 +73,7 @@ docker run -p 7680:7680 supply_chain_env
 ### Run inference against Docker
 
 ```bash
-export IMAGE_NAME=supply_chain_env
+export LOCAL_IMAGE_NAME=supply_chain_env
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
 python inference.py
 ```
