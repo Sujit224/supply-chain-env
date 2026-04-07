@@ -20,8 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application
 COPY --chown=user . $HOME/app
 
-# Hugging Face Spaces routes traffic to port 7860 by default (overridden to 8000 per user)
-EXPOSE 8000
+# Hugging Face Spaces routes traffic to port 7860 by default
+EXPOSE 7860
 
-# Run uvicorn on port 8000
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run uvicorn on port 7860
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]

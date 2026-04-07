@@ -293,11 +293,11 @@ async def main() -> None:
         if LOCAL_IMAGE_NAME:
             env = await SupplyChainEnv.from_docker_image(LOCAL_IMAGE_NAME)
         else:
-            env = SupplyChainEnv(base_url="http://localhost:8000")
+            env = SupplyChainEnv(base_url="http://localhost:7860")
     except Exception as e:
-        print(f"[DEBUG] Setup phase exception: {e}. Falling back to localhost:8000 if env not initialized.", flush=True)
+        print(f"[DEBUG] Setup phase exception: {e}. Falling back to localhost:7860 if env not initialized.", flush=True)
         if env is None:
-            env = SupplyChainEnv(base_url="http://localhost:8000")
+            env = SupplyChainEnv(base_url="http://localhost:7860")
             
     try:
         result = await asyncio.wait_for(
