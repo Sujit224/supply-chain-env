@@ -46,10 +46,6 @@ app = create_app(
     max_concurrent_envs=4,   # supports parallel training across easy/medium/hard
 )
 
-@app.get("/")
-def read_root():
-    return {"status": "ok"}
-
 
 def main(host: str = "0.0.0.0", port: int = 8000) -> None:
     """
