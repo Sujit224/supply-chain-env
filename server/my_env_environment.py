@@ -803,6 +803,7 @@ class SupplyChainEnvironment(Environment):
         cost_efficiency = min(theoretical_min / max(1, actual_cost), 1.0)
         score += cost_efficiency * 0.10
 
+        score = min(max(score, 0.01), 0.99)
         return round(score, 4)
 
     def _grade_task_2(self) -> float:
@@ -853,6 +854,7 @@ class SupplyChainEnvironment(Environment):
         else:
             score += 0.08
 
+        score = min(max(score, 0.01), 0.99)
         return round(score, 4)
 
     def _grade_task_3(self) -> float:
@@ -938,6 +940,7 @@ class SupplyChainEnvironment(Environment):
         else:
             score += 0.03
 
+        score = min(max(score, 0.01), 0.99)
         return round(score, 4)
 
     # ── Helpers ───────────────────────────────────────────────────────────────

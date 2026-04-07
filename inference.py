@@ -50,6 +50,7 @@ RESOURCE CONSTRAINTS
 import asyncio
 import json
 import os
+import subprocess
 import textwrap
 from typing import Any, Dict, List, Optional
 
@@ -290,6 +291,20 @@ async def main() -> None:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
         if LOCAL_IMAGE_NAME:
+            try:
+                # Check if image exists, build if it doesn't
+                inspect_result = subprocess.run(
+                    ["docker", "image", "inspect", LOCAL_IMAGE_NAME],
+                    capture_output=True,
+                    text=True,
+                )
+                if inspect_result.returncode != 0:
+                    print(f"[DEBUG] Image '{LOCAL_IMAGE_NAME}' not found locally. Building...", flush=True)
+                    subprocess.run(["docker", "build", "-t", LOCAL_IMAGE_NAME, "."], check=True)
+                    print(f"[DEBUG] Successfully built '{LOCAL_IMAGE_NAME}'.", flush=True)
+            except Exception as build_ex:
+                print(f"[DEBUG] Auto-build failed: {build_ex}", flush=True)
+
             env = await SupplyChainEnv.from_docker_image(LOCAL_IMAGE_NAME)
         else:
             env = SupplyChainEnv(base_url="http://localhost:8000")
@@ -342,8 +357,8 @@ async def main() -> None:
             if done:
                 break
 
-        score   = result.observation.grade_score or 0.0
-        score   = min(max(score, 0.0), 1.0)
+        score   = result.observation.grade_score if (result and hasattr(result.observation, 'grade_score') and result.observation.grade_score is not None) else 0.01
+        score   = min(max(score, 0.01), 0.99)
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except asyncio.TimeoutError:
