@@ -10,7 +10,7 @@ description: >
 type: mcp
 runtime: python
 app: server.app:app
-port: 7860
+port: 8000
 
 tasks:
   - id: easy

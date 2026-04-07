@@ -25,7 +25,7 @@ This document outlines the systematic strategy to build, test, and validate the 
 - **Goal:** Secure the multi-mode container execution target.
 - **Action:**
   - Build `Dockerfile` testing dependencies and paths accurately (e.g., matching the `server/app.py` location).
-  - Emulate the Hugging Face space launch via local startup parameters (`uvicorn server.app:app --host 0.0.0.0 --port 7860`).
+  - Emulate the Hugging Face space launch via local startup parameters (`uvicorn server.app:app --host 0.0.0.0 --port 8000`).
 
 ## 5. Comprehensive Pre-Submission Checks
 - Execute all commands found inside the provided validation script.
