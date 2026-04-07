@@ -13,10 +13,10 @@ Endpoints:
 
 Usage:
     # Development (with auto-reload):
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 7860
+    uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
 
     # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 7860 --workers 4
+    uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
 
     # Or run directly:
     python -m server.app
@@ -46,8 +46,12 @@ app = create_app(
     max_concurrent_envs=4,   # supports parallel training across easy/medium/hard
 )
 
+@app.get("/")
+def read_root():
+    return {"status": "ok"}
 
-def main(host: str = "0.0.0.0", port: int = 7860) -> None:
+
+def main(host: str = "0.0.0.0", port: int = 8000) -> None:
     """
     Entry point for direct execution via uv run or python -m.
 
@@ -58,7 +62,7 @@ def main(host: str = "0.0.0.0", port: int = 7860) -> None:
 
     Args:
         host: Host address to bind to (default: "0.0.0.0")
-        port: Port number to listen on (default: 7860)
+        port: Port number to listen on (default: 8000)
 
     For production deployments with multiple parallel environments:
         uvicorn supply_chain_env.server.app:app --workers 4
