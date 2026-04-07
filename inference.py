@@ -62,13 +62,13 @@ from models import SupplyChainAction
 from client import SupplyChainEnv
 from server.mcp_tools import SUPPLY_CHAIN_TOOLS
 
-IMAGE_NAME = os.getenv("IMAGE_NAME")
-API_KEY    = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+IMAGE_NAME = os.getenv("IMAGE_NAME") # If you are using docker image 
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME   = os.getenv("MODEL_NAME")   or "Qwen/Qwen2.5-72B-Instruct"
-TASK_NAME    = os.getenv("SUPPLY_CHAIN_TASK",      "easy")
-BENCHMARK    = os.getenv("SUPPLY_CHAIN_BENCHMARK", "supply_chain_env")
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+TASK_NAME = os.getenv("SUPPLY_CHAIN_TASK", "easy")
+BENCHMARK = os.getenv("SUPPLY_CHAIN_BENCHMARK", "supply_chain_env")
 SEED         = int(os.getenv("SUPPLY_CHAIN_SEED",  "42"))
 
 # Resource-aware step budget — stays well within 20 min on remote endpoints
@@ -124,7 +124,7 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -291,11 +291,11 @@ async def main() -> None:
         if IMAGE_NAME:
             env = await SupplyChainEnv.from_docker_image(IMAGE_NAME)
         else:
-            env = SupplyChainEnv(base_url="http://localhost:8000")
+            env = SupplyChainEnv(base_url="http://localhost:7680")
     except Exception as e:
-        print(f"[DEBUG] Setup phase exception: {e}. Falling back to localhost:8000 if env not initialized.", flush=True)
+        print(f"[DEBUG] Setup phase exception: {e}. Falling back to localhost:7680 if env not initialized.", flush=True)
         if env is None:
-            env = SupplyChainEnv(base_url="http://localhost:8000")
+            env = SupplyChainEnv(base_url="http://localhost:7680")
             
     try:
         result = await asyncio.wait_for(

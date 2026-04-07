@@ -30,7 +30,7 @@ class SupplyChainEnv(
     manager would use enterprise software such as SAP or Oracle SCM.
 
     Example:
-        >>> with SupplyChainEnv(base_url="http://localhost:8000") as client:
+        >>> with SupplyChainEnv(base_url="http://localhost:7680") as client:
         ...     # Start an easy episode
         ...     result = client.reset(task_id="easy", seed=42)
         ...     print(result.observation.current_day)
