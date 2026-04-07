@@ -47,7 +47,7 @@ export SUPPLY_CHAIN_TASK="easy"   # easy | medium | hard
 ### 3. Start the environment server
 
 ```bash
-uvicorn server.app:app --host 0.0.0.0 --port 7680
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 ```
 
 ### 4. Run inference
@@ -67,7 +67,7 @@ docker build -t supply_chain_env .
 ### Run server
 
 ```bash
-docker run -p 7680:7680 supply_chain_env
+docker run -p 7860:7860 supply_chain_env
 ```
 
 ### Run inference against Docker
