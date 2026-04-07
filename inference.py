@@ -291,20 +291,6 @@ async def main() -> None:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
         if LOCAL_IMAGE_NAME:
-            try:
-                # Check if image exists, build if it doesn't
-                inspect_result = subprocess.run(
-                    ["docker", "image", "inspect", LOCAL_IMAGE_NAME],
-                    capture_output=True,
-                    text=True,
-                )
-                if inspect_result.returncode != 0:
-                    print(f"[DEBUG] Image '{LOCAL_IMAGE_NAME}' not found locally. Building...", flush=True)
-                    subprocess.run(["docker", "build", "-t", LOCAL_IMAGE_NAME, "."], check=True)
-                    print(f"[DEBUG] Successfully built '{LOCAL_IMAGE_NAME}'.", flush=True)
-            except Exception as build_ex:
-                print(f"[DEBUG] Auto-build failed: {build_ex}", flush=True)
-
             env = await SupplyChainEnv.from_docker_image(LOCAL_IMAGE_NAME)
         else:
             env = SupplyChainEnv(base_url="http://localhost:8000")
