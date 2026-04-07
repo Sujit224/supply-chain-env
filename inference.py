@@ -272,24 +272,31 @@ def get_agent_action(
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 async def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
-    if IMAGE_NAME:
-        env = await SupplyChainEnv.from_docker_image(IMAGE_NAME)
-    else:
-        env = SupplyChainEnv(base_url="http://localhost:8000")
-
     messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     rewards:  List[float] = []
     steps_taken = 0
     score   = 0.0
     success = False
+    env = None
+    client = None
 
     # 18-min hard timeout — leaves 2-min buffer before the 20-min limit
     TIMEOUT_SECONDS = 18 * 60
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
+    try:
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+        if IMAGE_NAME:
+            env = await SupplyChainEnv.from_docker_image(IMAGE_NAME)
+        else:
+            env = SupplyChainEnv(base_url="http://localhost:8000")
+    except Exception as e:
+        print(f"[DEBUG] Setup phase exception: {e}. Falling back to localhost:8000 if env not initialized.", flush=True)
+        if env is None:
+            env = SupplyChainEnv(base_url="http://localhost:8000")
+            
     try:
         result = await asyncio.wait_for(
             env.reset(task_id=TASK_NAME, seed=SEED),
@@ -317,12 +324,18 @@ async def main() -> None:
             steps_taken = step
             rewards.append(reward)
 
+            error_msg = None
+            if isinstance(obs.tool_result, dict):
+                error_msg = obs.tool_result.get("error")
+                if error_msg:
+                    error_msg = str(error_msg).replace("\n", " ").replace("\r", " ")
+
             log_step(
                 step=step,
                 action=action_to_str(action),
                 reward=reward,
                 done=done,
-                error=None,
+                error=error_msg,
             )
 
             if done:
@@ -340,11 +353,12 @@ async def main() -> None:
 
     finally:
         try:
-            await env.close()
+            if env is not None:
+                await env.close()
         except Exception:
             pass
 
-        # FIX 3: Exactly ONE [END] line — env.close() errors are silenced above
+        # Exactly ONE [END] line — env.close() errors are silenced above
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
