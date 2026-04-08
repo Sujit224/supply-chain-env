@@ -249,9 +249,9 @@ def extract_step_reward(result: Any) -> float:
 
 def normalize_and_clamp_reward(raw_reward: float) -> float:
     """
-    Normalize reward to [0, 1] when needed, then clamp to [0.01, 0.99].
+    Normalize reward to (0, 1) then clamp to (0.01, 0.99).
 
-    - If reward is already in [0, 1], keep scale.
+    - If reward is already in (0, 1), keep scale.
     - If reward appears unbounded (outside [0, 1] or non-finite), squash with sigmoid.
     - Finally clamp for benchmark output requirements.
     """
@@ -260,7 +260,6 @@ def normalize_and_clamp_reward(raw_reward: float) -> float:
     elif 0.0 <= raw_reward <= 1.0:
         normalized = raw_reward
     else:
-        # Map an effectively unbounded range (-inf, +inf) to (0, 1).
         try:
             normalized = 1.0 / (1.0 + math.exp(-raw_reward))
         except OverflowError:
@@ -468,7 +467,6 @@ async def main() -> None:
         steps_taken = 0
         score = 0.0
         success = False
-        result = None
         stagnant_observation_steps = 0
         order_cooldown_steps = 0
 
@@ -506,7 +504,7 @@ async def main() -> None:
                         stagnant_observation_steps = 0
 
                     result = await asyncio.wait_for(env.step(action), timeout=30)
-                except (Exception, asyncio.CancelledError):
+                except Exception:
                     # Robust fallback: keep trajectory moving even if model/tool call fails.
                     obs = result.observation
                     action = build_progress_action(obs, avoid_orders=(order_cooldown_steps > 0))
@@ -546,10 +544,8 @@ async def main() -> None:
             score = min(max(score, 0.01), 0.99)
             success = score >= SUCCESS_SCORE_THRESHOLD
 
-        except (Exception, asyncio.CancelledError):
-            score = finalize_score(result, rewards)
-            score = min(max(score, 0.01), 0.99)
-            success = score >= SUCCESS_SCORE_THRESHOLD
+        except Exception:
+            pass
         finally:
             log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
@@ -561,7 +557,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())

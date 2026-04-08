@@ -194,6 +194,6 @@ class SupplyChainObservation(Observation):
     )
     grade_score: Optional[float] = Field(
         default=None,
-        description="Final grader score (0.0–1.0). Populated only when done=True.",
+        description="Final grader score (0.0\u20131.0). Populated only when done=True.",
     )
 

@@ -87,14 +87,14 @@ REWARD_FILL_PER_UNIT_WEIGHT: Dict[str, float] = {
     "SKU-A": 0.25, "SKU-B": 0.30, "SKU-C": 0.15,
     "SKU-D": 0.20, "SKU-E": 0.10, "SKU-F": 0.08,
 }
-REWARD_PROACTIVE_ORDER_BONUS = 0.5
+REWARD_PROACTIVE_ORDER_BONUS = 0.3
 REWARD_PANIC_ORDER_PENALTY = -0.3
-REWARD_PERISHABLE_EXPIRY_MULTIPLIER = 2.0
-REWARD_WAREHOUSE_OVERFLOW_PENALTY = -5.0
-REWARD_CASH_BREACH_PENALTY = -10.0
-REWARD_DISRUPTION_PREEMPTED_BONUS = 3.0
-REWARD_SUPPLIER_RELIABILITY_BONUS = 0.2
-TERMINAL_REWARD_SCALE = 50.0
+REWARD_PERISHABLE_EXPIRY_MULTIPLIER = 0.5
+REWARD_WAREHOUSE_OVERFLOW_PENALTY = -0.5
+REWARD_CASH_BREACH_PENALTY = -1.0
+REWARD_DISRUPTION_PREEMPTED_BONUS = 0.3
+REWARD_SUPPLIER_RELIABILITY_BONUS = 0.1
+TERMINAL_REWARD_SCALE = 1.0
 
 
 class SupplyChainEnvironment(Environment):
@@ -230,20 +230,18 @@ class SupplyChainEnvironment(Environment):
         return self._build_observation(
             tool_name="reset",
             tool_result={"message": f"Supply Chain environment ready. Task: {task_id}. Day 1 of {self._cfg['duration_days']}."},
+            reward=self._squash_reward(0.0),
         )
 
     def _squash_reward(self, raw_reward: float) -> float:
         """
         Squashes a raw reward to be strictly between 0 and 1.
-        Uses a sigmoid function and clamps to avoid exact 0.0 or 1.0 due to float precision.
+        Uses a sigmoid function and clamps to avoid exact 0.0 or 1.0.
         """
         try:
             val = 1.0 / (1.0 + math.exp(-raw_reward))
         except OverflowError:
-            # Handle math.exp overflow if raw_reward is a large negative number
             val = 0.0 if raw_reward < 0 else 1.0
-            
-        # Clamp bounds strictly inside (0, 1)
         return max(0.0001, min(0.9999, val))
 
     def step(self, action: SupplyChainAction) -> SupplyChainObservation:
@@ -376,7 +374,8 @@ class SupplyChainEnvironment(Environment):
             self._inventory[sku] = available - filled
             self._daily_filled[sku].append(filled)
             
-            daily_fill_reward += filled * REWARD_FILL_PER_UNIT_WEIGHT.get(sku, 0.0)
+            fill_rate = filled / max(1, demand)
+            daily_fill_reward += fill_rate * REWARD_FILL_PER_UNIT_WEIGHT.get(sku, 0.0)
 
             if unfilled > 0:
                 self._stockout_history[sku] = self._stockout_history.get(sku, 0) + 1
@@ -398,7 +397,8 @@ class SupplyChainEnvironment(Environment):
                 expired = self._inventory.get(sku, 0)
                 self._inventory[sku] = 0
                 self._total_expired[sku] = self._total_expired.get(sku, 0) + expired
-                expiry_penalty -= expired * cfg["unit_cost"] * REWARD_PERISHABLE_EXPIRY_MULTIPLIER
+                on_hand_before = expired
+                expiry_penalty -= (expired / max(1, on_hand_before)) * REWARD_PERISHABLE_EXPIRY_MULTIPLIER
                 
             days_in_episode = self._day
             if days_in_episode > expiry:
@@ -406,7 +406,8 @@ class SupplyChainEnvironment(Environment):
                 to_expire = round(self._inventory.get(sku, 0) * excess_fraction)
                 self._inventory[sku] = max(0, self._inventory.get(sku, 0) - to_expire)
                 self._total_expired[sku] = self._total_expired.get(sku, 0) + to_expire
-                expiry_penalty -= to_expire * cfg["unit_cost"] * REWARD_PERISHABLE_EXPIRY_MULTIPLIER
+                on_hand_before = self._inventory.get(sku, 0) + to_expire
+                expiry_penalty -= (to_expire / max(1, on_hand_before)) * REWARD_PERISHABLE_EXPIRY_MULTIPLIER
                 
         return expiry_penalty
 
