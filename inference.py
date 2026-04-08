@@ -468,6 +468,7 @@ async def main() -> None:
         steps_taken = 0
         score = 0.0
         success = False
+        result = None
         stagnant_observation_steps = 0
         order_cooldown_steps = 0
 
@@ -505,7 +506,7 @@ async def main() -> None:
                         stagnant_observation_steps = 0
 
                     result = await asyncio.wait_for(env.step(action), timeout=30)
-                except Exception:
+                except (Exception, asyncio.CancelledError):
                     # Robust fallback: keep trajectory moving even if model/tool call fails.
                     obs = result.observation
                     action = build_progress_action(obs, avoid_orders=(order_cooldown_steps > 0))
@@ -545,8 +546,10 @@ async def main() -> None:
             score = min(max(score, 0.01), 0.99)
             success = score >= SUCCESS_SCORE_THRESHOLD
 
-        except Exception:
-            pass
+        except (Exception, asyncio.CancelledError):
+            score = finalize_score(result, rewards)
+            score = min(max(score, 0.01), 0.99)
+            success = score >= SUCCESS_SCORE_THRESHOLD
         finally:
             log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
@@ -558,4 +561,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
