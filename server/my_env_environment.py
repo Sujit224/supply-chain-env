@@ -132,6 +132,7 @@ class SupplyChainEnvironment(Environment):
 
         self._inventory: Dict[str, int] = {}
         self._pending_orders: List[Dict[str, Any]] = []
+        self._order_history: List[Dict[str, Any]] = []
         self._reorder_points: Dict[str, int] = {}
         self._safety_stock: Dict[str, int] = {}
 
@@ -203,6 +204,7 @@ class SupplyChainEnvironment(Environment):
             for sku in self._active_skus
         }
         self._pending_orders = []
+        self._order_history = []
 
         self._cash_balance = STARTING_CASH[task_id]
         self._month_spend = 0.0
@@ -589,6 +591,7 @@ class SupplyChainEnvironment(Environment):
             "order_day": self._day,
             "total_cost": total_cost,
         })
+        self._order_history.append(self._pending_orders[-1])
 
         self._cash_balance -= total_cost
         self._month_spend += total_cost
@@ -833,8 +836,16 @@ class SupplyChainEnvironment(Environment):
         avg_demand = self._demand_model.average_daily_demand(sku)
         lead_time = SKU_CONFIG[sku]["lead_time_max"]
         safety_buffer = 3
-        for order in [o for o in self._pending_orders if o["sku"] == sku]:
-            inv_at_order = self._inventory.get(sku, 0)
+        # Use order_history instead of pending_orders to see all orders ever placed
+        for order in [o for o in self._order_history if o["sku"] == sku]:
+            order_day = order["order_day"]
+            # Look up inventory level on the day the order was placed
+            # Index is order_day - 1 because list is 0-indexed
+            try:
+                inv_at_order = self._daily_inventory[sku][order_day - 1]
+            except (KeyError, IndexError):
+                inv_at_order = 0
+                
             days_stock = inv_at_order / max(1, avg_demand)
             ideal = lead_time + safety_buffer
             err = abs(days_stock - ideal)
@@ -843,7 +854,7 @@ class SupplyChainEnvironment(Environment):
 
         theoretical_min = (
             total_demand * SKU_CONFIG[sku]["unit_cost"]
-            + self._safety_stock.get(sku, 0) * SKU_CONFIG[sku]["holding_cost_per_unit_per_day"] * 30
+            + self._safety_stock.get(sku, 0) * SKU_CONFIG[sku]["holding_cost_per_unit_per_day"] * self._cfg["duration_days"]
         )
         actual_cost = self._total_procurement_cost + self._total_carrying_cost
         cost_efficiency = min(theoretical_min / max(1, actual_cost), 1.0)
@@ -891,7 +902,7 @@ class SupplyChainEnvironment(Environment):
         score += (mean(util_scores) if util_scores else 0.5) * 0.12
 
         sku_d_purchased = sum(
-            o["requested_quantity"] for o in self._pending_orders if o["sku"] == "SKU-D"
+            o["requested_quantity"] for o in self._order_history if o["sku"] == "SKU-D"
         )
         sku_d_expired = self._total_expired.get("SKU-D", 0)
         if sku_d_purchased > 0:
@@ -978,7 +989,7 @@ class SupplyChainEnvironment(Environment):
 
         sku_d_expired = self._total_expired.get("SKU-D", 0)
         sku_d_purchased = sum(
-            o["requested_quantity"] for o in self._pending_orders if o["sku"] == "SKU-D"
+            o["requested_quantity"] for o in self._order_history if o["sku"] == "SKU-D"
         )
         if sku_d_purchased > 0:
             waste_rate = sku_d_expired / sku_d_purchased

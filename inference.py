@@ -80,7 +80,7 @@ BENCHMARK = os.getenv("SUPPLY_CHAIN_BENCHMARK", "supply_chain_env")
 SEED         = int(os.getenv("SUPPLY_CHAIN_SEED",  "42"))
 
 # Resource-aware step budget — stays well within 20 min on remote endpoints
-_STEP_BUDGETS = {"easy": 70, "medium": 130, "hard": 190}
+_STEP_BUDGETS = {"easy": 30, "medium": 60, "hard": 90}
 MAX_STEPS_OVERRIDE = os.getenv("MAX_STEPS")
 
 TEMPERATURE = 0.7
@@ -212,28 +212,39 @@ def format_observation(obs: Any, step: int) -> str:
 
 
 def action_to_str(action: SupplyChainAction) -> str:
-    """Compact one-line action string used in [STEP] log lines."""
-    parts = [action.tool_name]
-    for field in ["sku", "supplier_id", "quantity", "order_id"]:
+    """Function-like action string for [STEP] logs."""
+    args: List[str] = []
+    for field in [
+        "sku", "supplier_id", "quantity", "order_id",
+        "new_threshold", "new_level", "horizon_days",
+        "lookback_days", "from_sku", "to_sku", "reason",
+    ]:
         val = getattr(action, field, None)
-        if val is not None:
-            parts.append(str(val))
-    return "(" + ",".join(parts) + ")"
+        if val is None:
+            continue
+        if isinstance(val, str):
+            args.append(f"{field}={val!r}")
+        else:
+            args.append(f"{field}={val}")
+    return f"{action.tool_name}({', '.join(args)})"
 
 
 def extract_step_reward(result: Any) -> float:
     """
-    Extract step reward without distorting it.
-
-    Prefer StepResult.reward, then observation.reward, and only then fallback to 0.0.
-    This preserves true 0.0 rewards (instead of coercing to 0.01).
+    Extract step reward, prioritizing the squashed reward from the observation.
     """
+    # 1. Look for the squashed reward inside the observation FIRST
+    if hasattr(result, "observation") and hasattr(result.observation, "reward"):
+        if getattr(result.observation, "reward") is not None:
+            return float(result.observation.reward)
+            
+    # 2. Fallback to the top-level result reward
     reward = getattr(result, "reward", None)
-    if reward is None and hasattr(result, "observation"):
-        reward = getattr(result.observation, "reward", None)
-    if reward is None:
-        return 0.0
-    return float(reward)
+    if reward is not None:
+        return float(reward)
+        
+    # 3. Final fallback
+    return 0.01
 
 
 def normalize_and_clamp_reward(raw_reward: float) -> float:
@@ -256,6 +267,29 @@ def normalize_and_clamp_reward(raw_reward: float) -> float:
             normalized = 0.0 if raw_reward < 0 else 1.0
 
     return min(max(normalized, 0.01), 0.99)
+
+
+def finalize_score(result: Any, rewards: List[float]) -> float:
+    """
+    Ensure emitted task score is always strictly within (0, 1).
+
+    Priority:
+    1) Use grader score when available.
+    2) Fallback to mean normalized rewards for incomplete episodes.
+    3) Final safety fallback to 0.01.
+    """
+    grade_score = None
+    if result is not None and hasattr(result, "observation"):
+        grade_score = getattr(result.observation, "grade_score", None)
+
+    if grade_score is not None:
+        return min(max(float(grade_score), 0.01), 0.99)
+
+    if rewards:
+        avg_reward = sum(rewards) / max(1, len(rewards))
+        return min(max(float(avg_reward), 0.01), 0.99)
+
+    return 0.01
 
 
 def build_progress_action(obs: Any, avoid_orders: bool = False) -> SupplyChainAction:
@@ -478,8 +512,7 @@ async def main() -> None:
                     result = await asyncio.wait_for(env.step(action), timeout=30)
                     stagnant_observation_steps = 0
 
-                raw_reward = extract_step_reward(result)
-                reward = normalize_and_clamp_reward(raw_reward)
+                reward = extract_step_reward(result)
                 done = result.done
                 steps_taken = step
                 rewards.append(reward)
@@ -507,11 +540,9 @@ async def main() -> None:
                 if done:
                     break
 
-            score = (
-                result.observation.grade_score
-                if (result and hasattr(result.observation, "grade_score") and result.observation.grade_score is not None)
-                else 0.0
-            )
+            score = finalize_score(result, rewards)
+            # Final safety check to keep score in (0, 1) per benchmark rules
+            score = min(max(score, 0.01), 0.99)
             success = score >= SUCCESS_SCORE_THRESHOLD
 
         except Exception:
