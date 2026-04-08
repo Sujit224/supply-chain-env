@@ -415,25 +415,31 @@ async def main() -> None:
             if elapsed > TIMEOUT_SECONDS:
                 break
 
-            obs = result.observation
-            action, messages = get_agent_action(client, messages, obs, step)
+            try:
+                obs = result.observation
+                action, messages = get_agent_action(client, messages, obs, step)
 
-            chosen_tool = (action.tool_name or "").strip().lower()
-            if chosen_tool in OBSERVATION_TOOLS:
-                stagnant_observation_steps += 1
-            else:
+                chosen_tool = (action.tool_name or "").strip().lower()
+                if chosen_tool in OBSERVATION_TOOLS:
+                    stagnant_observation_steps += 1
+                else:
+                    stagnant_observation_steps = 0
+
+                if stagnant_observation_steps >= MAX_STAGNANT_OBSERVATION_STEPS:
+                    action = build_progress_action(obs)
+                    stagnant_observation_steps = 0
+
+                result = await asyncio.wait_for(env.step(action), timeout=30)
+            except Exception:
+                # Robust fallback: keep trajectory moving even if model/tool call fails.
+                obs = result.observation
+                action = build_progress_action(obs)
+                result = await asyncio.wait_for(env.step(action), timeout=30)
                 stagnant_observation_steps = 0
 
-            if stagnant_observation_steps >= MAX_STAGNANT_OBSERVATION_STEPS:
-                forced_action = build_progress_action(obs)
-                action = forced_action
-                stagnant_observation_steps = 0
-
-            result = await asyncio.wait_for(env.step(action), timeout=30)
-
-            raw_reward  = extract_step_reward(result)
-            reward      = normalize_and_clamp_reward(raw_reward)
-            done        = result.done
+            raw_reward = extract_step_reward(result)
+            reward = normalize_and_clamp_reward(raw_reward)
+            done = result.done
             steps_taken = step
             rewards.append(reward)
 
