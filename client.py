@@ -136,15 +136,15 @@ class SupplyChainEnv(
             episode_day=obs_data.get("episode_day", 1),
             grade_score=obs_data.get("grade_score"),
             # OpenEnv base fields
-            done=payload.get("done", False),
-            reward=payload.get("reward"),
+            done=obs_data.get("done", payload.get("done", False)),
+            reward=obs_data.get("reward", payload.get("reward")),
             metadata=obs_data.get("metadata", {}),
         )
 
         return StepResult(
             observation=observation,
-            reward=payload.get("reward"),
-            done=payload.get("done", False),
+            reward=obs_data.get("reward", payload.get("reward")),
+            done=obs_data.get("done", payload.get("done", False)),
         )
 
 

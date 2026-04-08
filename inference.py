@@ -5,7 +5,7 @@ MANDATORY
 - Before submitting, ensure the following variables are defined in your environment configuration:
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
-    HF_TOKEN       Your Hugging Face / API key.
+    OPENAI_API_KEY OpenAI-compatible API key.
     LOCAL_IMAGE_NAME     The name of the local Docker image for the environment
                    (used with from_docker_image())
 
@@ -49,6 +49,7 @@ RESOURCE CONSTRAINTS
 
 import asyncio
 import json
+import math
 import os
 import subprocess
 import textwrap
@@ -66,7 +67,11 @@ from server.mcp_tools import SUPPLY_CHAIN_TOOLS
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") # If you are using docker image 
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+API_KEY = (
+    os.environ.get("OPENAI_API_KEY")
+    or os.environ.get("API_KEY")
+    or os.environ.get("HF_TOKEN")
+)
 MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 TASK_NAME = os.getenv("SUPPLY_CHAIN_TASK", "easy")
@@ -80,6 +85,16 @@ MAX_STEPS = int(os.getenv("MAX_STEPS", str(_STEP_BUDGETS.get(TASK_NAME, 130))))
 TEMPERATURE = 0.7
 MAX_TOKENS  = 256
 SUCCESS_SCORE_THRESHOLD = 0.5
+MAX_STAGNANT_OBSERVATION_STEPS = 2
+
+OBSERVATION_TOOLS = {
+    "observe_inventory",
+    "get_demand_forecast",
+    "get_demand_history",
+    "get_supplier_quotes",
+    "check_warehouse_capacity",
+    "observe_disruptions",
+}
 
 # ── FIX 1: System prompt now tells agent to act, not just observe ─────────────
 
@@ -195,6 +210,84 @@ def action_to_str(action: SupplyChainAction) -> str:
     return "(" + ",".join(parts) + ")"
 
 
+def extract_step_reward(result: Any) -> float:
+    """
+    Extract step reward without distorting it.
+
+    Prefer StepResult.reward, then observation.reward, and only then fallback to 0.0.
+    This preserves true 0.0 rewards (instead of coercing to 0.01).
+    """
+    reward = getattr(result, "reward", None)
+    if reward is None and hasattr(result, "observation"):
+        reward = getattr(result.observation, "reward", None)
+    if reward is None:
+        return 0.0
+    return float(reward)
+
+
+def normalize_and_clamp_reward(raw_reward: float) -> float:
+    """
+    Normalize reward to [0, 1] when needed, then clamp to [0.01, 0.99].
+
+    - If reward is already in [0, 1], keep scale.
+    - If reward appears unbounded (outside [0, 1] or non-finite), squash with sigmoid.
+    - Finally clamp for benchmark output requirements.
+    """
+    if not math.isfinite(raw_reward):
+        normalized = 1.0 if raw_reward > 0 else 0.0
+    elif 0.0 <= raw_reward <= 1.0:
+        normalized = raw_reward
+    else:
+        # Map an effectively unbounded range (-inf, +inf) to (0, 1).
+        try:
+            normalized = 1.0 / (1.0 + math.exp(-raw_reward))
+        except OverflowError:
+            normalized = 0.0 if raw_reward < 0 else 1.0
+
+    return min(max(normalized, 0.01), 0.99)
+
+
+def build_progress_action(obs: Any) -> SupplyChainAction:
+    """
+    Build a low-risk non-observation action to break read-only loops.
+    """
+    available_space = max(0, int(obs.warehouse_capacity) - int(sum(obs.inventory.values())))
+
+    for sku, on_hand in obs.inventory.items():
+        rp = int(obs.reorder_points.get(sku, 0))
+        ss = int(obs.safety_stock.get(sku, 0))
+        in_transit = sum(
+            int(o.get("delivered_quantity", 0))
+            for o in obs.pending_orders
+            if o.get("sku") == sku
+        )
+        target = rp + ss
+        shortfall = target - (on_hand + in_transit)
+        if shortfall > 0 and available_space > 0:
+            # Respect physical space to avoid forced overflow rejections.
+            qty = min(shortfall, available_space)
+            if qty <= 0:
+                continue
+            return SupplyChainAction(
+                tool_name="place_order",
+                sku=sku,
+                supplier_id="alpha",
+                quantity=qty,
+                reason="Auto-progress: break observation loop and replenish below target.",
+            )
+
+    # Fallback: always use a safe non-observation action that advances time
+    # without triggering warehouse overflow penalties.
+    fallback_sku = next(iter(obs.inventory.keys()), "SKU-C")
+    current_rp = int(obs.reorder_points.get(fallback_sku, 0))
+    return SupplyChainAction(
+        tool_name="adjust_reorder_point",
+        sku=fallback_sku,
+        new_threshold=current_rp,
+        reason="Auto-progress: break observation loop with no-op threshold refresh.",
+    )
+
+
 def parse_tool_call(response: Any) -> SupplyChainAction:
     """
     Parse the first tool call from the OpenAI response into a SupplyChainAction.
@@ -252,7 +345,16 @@ def get_agent_action(
             stream=False,
         )
 
-        messages.append(response.choices[0].message.model_dump())
+        assistant_msg = {
+            "role": "assistant",
+            "content": response.choices[0].message.content,
+        }
+        if response.choices[0].message.tool_calls:
+            assistant_msg["tool_calls"] = [
+                {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in response.choices[0].message.tool_calls
+            ]
+        messages.append(assistant_msg)
         action = parse_tool_call(response)
 
         # Feed the tool result back into history so model sees its own outputs
@@ -264,8 +366,7 @@ def get_agent_action(
                 "content": json.dumps(obs.tool_result),
             })
 
-    except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", flush=True)
+    except Exception:
         action = SupplyChainAction(tool_name="observe_inventory")
 
     return action, messages
@@ -281,6 +382,7 @@ async def main() -> None:
     success = False
     env = None
     client = None
+    stagnant_observation_steps = 0
 
     # 18-min hard timeout — leaves 2-min buffer before the 20-min limit
     TIMEOUT_SECONDS = 18 * 60
@@ -289,13 +391,11 @@ async def main() -> None:
 
     try:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
         if LOCAL_IMAGE_NAME:
             env = await SupplyChainEnv.from_docker_image(LOCAL_IMAGE_NAME)
         else:
             env = SupplyChainEnv(base_url="http://localhost:8000")
-    except Exception as e:
-        print(f"[DEBUG] Setup phase exception: {e}. Falling back to localhost:8000 if env not initialized.", flush=True)
+    except Exception:
         if env is None:
             env = SupplyChainEnv(base_url="http://localhost:8000")
             
@@ -313,22 +413,34 @@ async def main() -> None:
 
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed > TIMEOUT_SECONDS:
-                print(f"[DEBUG] Timeout guard at step {step} ({elapsed:.0f}s)", flush=True)
                 break
 
             obs = result.observation
             action, messages = get_agent_action(client, messages, obs, step)
 
+            chosen_tool = (action.tool_name or "").strip().lower()
+            if chosen_tool in OBSERVATION_TOOLS:
+                stagnant_observation_steps += 1
+            else:
+                stagnant_observation_steps = 0
+
+            if stagnant_observation_steps >= MAX_STAGNANT_OBSERVATION_STEPS:
+                forced_action = build_progress_action(obs)
+                action = forced_action
+                stagnant_observation_steps = 0
+
             result = await asyncio.wait_for(env.step(action), timeout=30)
 
-            reward      = result.reward or 0.0
+            raw_reward  = extract_step_reward(result)
+            reward      = normalize_and_clamp_reward(raw_reward)
             done        = result.done
             steps_taken = step
             rewards.append(reward)
 
             error_msg = None
-            if isinstance(obs.tool_result, dict):
-                error_msg = obs.tool_result.get("error")
+            new_obs = result.observation
+            if isinstance(new_obs.tool_result, dict):
+                error_msg = new_obs.tool_result.get("error")
                 if error_msg:
                     error_msg = str(error_msg).replace("\n", " ").replace("\r", " ")
 
@@ -343,15 +455,18 @@ async def main() -> None:
             if done:
                 break
 
-        score   = result.observation.grade_score if (result and hasattr(result.observation, 'grade_score') and result.observation.grade_score is not None) else 0.01
-        score   = min(max(score, 0.01), 0.99)
+        score = (
+            result.observation.grade_score
+            if (result and hasattr(result.observation, "grade_score") and result.observation.grade_score is not None)
+            else 0.0
+        )
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except asyncio.TimeoutError:
-        print("[DEBUG] Hard timeout — forcing episode end", flush=True)
+        pass
 
-    except Exception as exc:
-        print(f"[DEBUG] Episode error: {exc}", flush=True)
+    except Exception:
+        pass
 
     finally:
         try:

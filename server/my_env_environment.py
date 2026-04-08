@@ -16,9 +16,10 @@ Three graded tasks of escalating difficulty:
     easy   — Single-SKU (SKU-C), 30 days, 1 supplier, no disruptions.
     medium — All 5 SKUs, 60 days, 3 suppliers, 1 surprise disruption.
     hard   — All 6 SKUs, 90 days, 3 suppliers, 2-3 disruptions, demand surge,
-              cash constraint, reliability shock, new-SKU launch on Day 60.
+             cash constraint, reliability shock, new-SKU launch on Day 60.
 """
 
+import math
 import random
 from statistics import mean
 from typing import Any, Dict, List, Optional
@@ -229,6 +230,20 @@ class SupplyChainEnvironment(Environment):
             tool_result={"message": f"Supply Chain environment ready. Task: {task_id}. Day 1 of {self._cfg['duration_days']}."},
         )
 
+    def _squash_reward(self, raw_reward: float) -> float:
+        """
+        Squashes a raw reward to be strictly between 0 and 1.
+        Uses a sigmoid function and clamps to avoid exact 0.0 or 1.0 due to float precision.
+        """
+        try:
+            val = 1.0 / (1.0 + math.exp(-raw_reward))
+        except OverflowError:
+            # Handle math.exp overflow if raw_reward is a large negative number
+            val = 0.0 if raw_reward < 0 else 1.0
+            
+        # Clamp bounds strictly inside (0, 1)
+        return max(0.0001, min(0.9999, val))
+
     def step(self, action: SupplyChainAction) -> SupplyChainObservation:
         """
         Execute one MCP tool call and advance the simulation by one step.
@@ -243,18 +258,31 @@ class SupplyChainEnvironment(Environment):
             return self._build_observation(
                 tool_name=action.tool_name,
                 tool_result={"error": "Episode is done. Call reset() to start a new episode."},
-                reward=0.0,
+                reward=self._squash_reward(0.0), # Ensures it adheres to bounds even if called after done
             )
 
         self._state.step_count += 1
 
+        # Normalize tool names defensively so read-only tools never
+        # accidentally consume simulation time due to casing/whitespace.
+        normalized_tool_name = (action.tool_name or "").strip().lower()
+        action.tool_name = normalized_tool_name
+
         tool_result, step_reward = self._dispatch_tool(action)
 
-        self._day += 1
-        if self._day <= self._cfg["duration_days"]:
-            self._tick_day()
+        OBSERVATION_TOOLS = {
+            "observe_inventory", "get_demand_forecast", "get_demand_history",
+            "get_supplier_quotes", "check_warehouse_capacity", "observe_disruptions"
+        }
 
-        if self._day > self._cfg["duration_days"]:
+        is_observation_tool = normalized_tool_name in OBSERVATION_TOOLS
+        if not is_observation_tool:
+            self._day += 1
+            if self._day <= self._cfg["duration_days"]:
+                daily_reward = self._tick_day()
+                step_reward += daily_reward
+
+        if self._day >= self._cfg["duration_days"]:
             self._done = True
 
         grade_score = None
@@ -262,10 +290,13 @@ class SupplyChainEnvironment(Environment):
             grade_score = self._grade()
             step_reward += grade_score * TERMINAL_REWARD_SCALE
 
+        # Final squashing before returning to guarantee 0 < reward < 1 at every step
+        squashed_step_reward = self._squash_reward(step_reward)
+
         return self._build_observation(
             tool_name=action.tool_name,
             tool_result=tool_result,
-            reward=step_reward,
+            reward=squashed_step_reward,
             grade_score=grade_score,
         )
 
@@ -276,9 +307,9 @@ class SupplyChainEnvironment(Environment):
 
     # ── Daily simulation tick ─────────────────────────────────────────────────
 
-    def _tick_day(self) -> None:
+    def _tick_day(self) -> float:
         """
-        Advance the simulation by one day.
+        Advance the simulation by one day and calculate dense rewards.
 
         Order of operations:
             1. Receive any orders arriving today.
@@ -290,11 +321,12 @@ class SupplyChainEnvironment(Environment):
             7. Handle hard-task events (new SKU launch, reliability shock).
             8. Record daily snapshots.
         """
+        daily_reward = 0.0
         cfg = self._cfg
 
         self._receive_orders()
-        self._fulfil_demand()
-        self._expire_perishables()
+        daily_reward += self._fulfil_demand()
+        daily_reward += self._expire_perishables()
         self._charge_holding_costs()
 
         if self._day - self._month_start_day >= 30:
@@ -310,6 +342,8 @@ class SupplyChainEnvironment(Environment):
             self._supplier_model.degrade_supplier_permanently(shock[0], shock[1])
 
         self._record_snapshots()
+        
+        return daily_reward
 
     def _receive_orders(self) -> None:
         """Move orders whose ETA matches today into on-hand inventory."""
@@ -326,8 +360,9 @@ class SupplyChainEnvironment(Environment):
                 still_pending.append(order)
         self._pending_orders = still_pending
 
-    def _fulfil_demand(self) -> None:
+    def _fulfil_demand(self) -> float:
         """Sample demand for each active SKU and fill as much as possible."""
+        daily_fill_reward = 0.0
         for sku in self._active_skus:
             demand = self._demand_model.get_demand(sku, self._day)
             self._daily_demand[sku].append(demand)
@@ -338,14 +373,19 @@ class SupplyChainEnvironment(Environment):
 
             self._inventory[sku] = available - filled
             self._daily_filled[sku].append(filled)
+            
+            daily_fill_reward += filled * REWARD_FILL_PER_UNIT_WEIGHT.get(sku, 0.0)
 
             if unfilled > 0:
                 self._stockout_history[sku] = self._stockout_history.get(sku, 0) + 1
                 penalty = unfilled * SKU_CONFIG[sku]["unit_cost"] * SKU_CONFIG[sku]["stockout_penalty_multiplier"]
                 self._total_stockout_cost += penalty
+        
+        return daily_fill_reward
 
-    def _expire_perishables(self) -> None:
+    def _expire_perishables(self) -> float:
         """Discard inventory that has exceeded its shelf life."""
+        expiry_penalty = 0.0
         for sku in self._active_skus:
             cfg = SKU_CONFIG[sku]
             if not cfg["perishable"]:
@@ -356,12 +396,17 @@ class SupplyChainEnvironment(Environment):
                 expired = self._inventory.get(sku, 0)
                 self._inventory[sku] = 0
                 self._total_expired[sku] = self._total_expired.get(sku, 0) + expired
+                expiry_penalty -= expired * cfg["unit_cost"] * REWARD_PERISHABLE_EXPIRY_MULTIPLIER
+                
             days_in_episode = self._day
             if days_in_episode > expiry:
                 excess_fraction = min(0.05, (days_in_episode - expiry) / (expiry * 10))
                 to_expire = round(self._inventory.get(sku, 0) * excess_fraction)
                 self._inventory[sku] = max(0, self._inventory.get(sku, 0) - to_expire)
                 self._total_expired[sku] = self._total_expired.get(sku, 0) + to_expire
+                expiry_penalty -= to_expire * cfg["unit_cost"] * REWARD_PERISHABLE_EXPIRY_MULTIPLIER
+                
+        return expiry_penalty
 
     def _charge_holding_costs(self) -> None:
         """Charge daily holding (carrying) costs for all on-hand inventory."""
@@ -523,7 +568,8 @@ class SupplyChainEnvironment(Environment):
         if monthly_limit and (self._month_spend + total_cost) > monthly_limit:
             return {
                 "error": f"Order rejected: monthly cash limit exceeded. Remaining this month: {monthly_limit - self._month_spend:.0f} INR.",
-            }, 0.0
+                "penalty": REWARD_CASH_BREACH_PENALTY,
+            }, REWARD_CASH_BREACH_PENALTY
 
         # Resolve order with supplier reliability
         arrival_day, delivered_qty = self._supplier_model.resolve_order(
