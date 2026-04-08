@@ -74,18 +74,20 @@ API_KEY = (
 )
 MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-TASK_NAME = os.getenv("SUPPLY_CHAIN_TASK", "easy")
+TASK_NAME = os.getenv("SUPPLY_CHAIN_TASK")
+SINGLE_TASK = os.getenv("SUPPLY_CHAIN_SINGLE_TASK")
 BENCHMARK = os.getenv("SUPPLY_CHAIN_BENCHMARK", "supply_chain_env")
 SEED         = int(os.getenv("SUPPLY_CHAIN_SEED",  "42"))
 
 # Resource-aware step budget — stays well within 20 min on remote endpoints
 _STEP_BUDGETS = {"easy": 70, "medium": 130, "hard": 190}
-MAX_STEPS = int(os.getenv("MAX_STEPS", str(_STEP_BUDGETS.get(TASK_NAME, 130))))
+MAX_STEPS_OVERRIDE = os.getenv("MAX_STEPS")
 
 TEMPERATURE = 0.7
 MAX_TOKENS  = 256
 SUCCESS_SCORE_THRESHOLD = 0.5
 MAX_STAGNANT_OBSERVATION_STEPS = 2
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 
 OBSERVATION_TOOLS = {
     "observe_inventory",
@@ -94,6 +96,15 @@ OBSERVATION_TOOLS = {
     "get_supplier_quotes",
     "check_warehouse_capacity",
     "observe_disruptions",
+}
+
+SKU_UNIT_COST = {
+    "SKU-A": 120,
+    "SKU-B": 4500,
+    "SKU-C": 800,
+    "SKU-D": 60,
+    "SKU-E": 2200,
+    "SKU-F": 1500,
 }
 
 # ── FIX 1: System prompt now tells agent to act, not just observe ─────────────
@@ -247,12 +258,24 @@ def normalize_and_clamp_reward(raw_reward: float) -> float:
     return min(max(normalized, 0.01), 0.99)
 
 
-def build_progress_action(obs: Any) -> SupplyChainAction:
+def build_progress_action(obs: Any, avoid_orders: bool = False) -> SupplyChainAction:
     """
     Build a low-risk non-observation action to break read-only loops.
     """
+    if avoid_orders:
+        fallback_sku = next(iter(obs.inventory.keys()), "SKU-C")
+        current_rp = int(obs.reorder_points.get(fallback_sku, 0))
+        lowered_rp = max(0, int(current_rp * 0.95))
+        return SupplyChainAction(
+            tool_name="adjust_reorder_point",
+            sku=fallback_sku,
+            new_threshold=lowered_rp,
+            reason="Auto-progress: temporary order cooldown after cash-limit rejection.",
+        )
+
     available_space = max(0, int(obs.warehouse_capacity) - int(sum(obs.inventory.values())))
 
+    candidates: List[tuple[float, str, int]] = []
     for sku, on_hand in obs.inventory.items():
         rp = int(obs.reorder_points.get(sku, 0))
         ss = int(obs.safety_stock.get(sku, 0))
@@ -263,18 +286,29 @@ def build_progress_action(obs: Any) -> SupplyChainAction:
         )
         target = rp + ss
         shortfall = target - (on_hand + in_transit)
-        if shortfall > 0 and available_space > 0:
-            # Respect physical space to avoid forced overflow rejections.
-            qty = min(shortfall, available_space)
-            if qty <= 0:
-                continue
-            return SupplyChainAction(
-                tool_name="place_order",
-                sku=sku,
-                supplier_id="alpha",
-                quantity=qty,
-                reason="Auto-progress: break observation loop and replenish below target.",
-            )
+        if shortfall <= 0 or available_space <= 0:
+            continue
+
+        qty = min(shortfall, available_space)
+        if qty <= 0:
+            continue
+
+        unit_cost = SKU_UNIT_COST.get(sku, 1000)
+        estimated_cost = qty * unit_cost
+        urgency = shortfall / max(1, rp)
+        # Prefer urgent + cheaper replenishments to avoid cash-limit failures.
+        score = urgency / max(1.0, estimated_cost / 100000.0)
+        candidates.append((score, sku, qty))
+
+    if candidates:
+        _, sku, qty = max(candidates, key=lambda x: x[0])
+        return SupplyChainAction(
+            tool_name="place_order",
+            sku=sku,
+            supplier_id="alpha",
+            quantity=qty,
+            reason="Auto-progress: break observation loop with cost-aware replenishment.",
+        )
 
     # Fallback: always use a safe non-observation action that advances time
     # without triggering warehouse overflow penalties.
@@ -375,19 +409,14 @@ def get_agent_action(
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 async def main() -> None:
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    rewards:  List[float] = []
-    steps_taken = 0
-    score   = 0.0
-    success = False
     env = None
     client = None
-    stagnant_observation_steps = 0
 
     # 18-min hard timeout — leaves 2-min buffer before the 20-min limit
     TIMEOUT_SECONDS = 18 * 60
-
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    # Submission default: always benchmark all three tasks.
+    # Use SUPPLY_CHAIN_SINGLE_TASK only for local debugging.
+    tasks_to_run = [SINGLE_TASK] if SINGLE_TASK else ["easy", "medium", "hard"]
 
     try:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
@@ -398,91 +427,103 @@ async def main() -> None:
     except Exception:
         if env is None:
             env = SupplyChainEnv(base_url="http://localhost:8000")
-            
-    try:
-        result = await asyncio.wait_for(
-            env.reset(task_id=TASK_NAME, seed=SEED),
-            timeout=60,
-        )
+    
+    for task_id in tasks_to_run:
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        rewards: List[float] = []
+        steps_taken = 0
+        score = 0.0
+        success = False
+        stagnant_observation_steps = 0
+        order_cooldown_steps = 0
 
-        start_time = asyncio.get_event_loop().time()
+        log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
-        for step in range(1, MAX_STEPS + 1):
-            if result.done:
-                break
-
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed > TIMEOUT_SECONDS:
-                break
-
-            try:
-                obs = result.observation
-                action, messages = get_agent_action(client, messages, obs, step)
-
-                chosen_tool = (action.tool_name or "").strip().lower()
-                if chosen_tool in OBSERVATION_TOOLS:
-                    stagnant_observation_steps += 1
-                else:
-                    stagnant_observation_steps = 0
-
-                if stagnant_observation_steps >= MAX_STAGNANT_OBSERVATION_STEPS:
-                    action = build_progress_action(obs)
-                    stagnant_observation_steps = 0
-
-                result = await asyncio.wait_for(env.step(action), timeout=30)
-            except Exception:
-                # Robust fallback: keep trajectory moving even if model/tool call fails.
-                obs = result.observation
-                action = build_progress_action(obs)
-                result = await asyncio.wait_for(env.step(action), timeout=30)
-                stagnant_observation_steps = 0
-
-            raw_reward = extract_step_reward(result)
-            reward = normalize_and_clamp_reward(raw_reward)
-            done = result.done
-            steps_taken = step
-            rewards.append(reward)
-
-            error_msg = None
-            new_obs = result.observation
-            if isinstance(new_obs.tool_result, dict):
-                error_msg = new_obs.tool_result.get("error")
-                if error_msg:
-                    error_msg = str(error_msg).replace("\n", " ").replace("\r", " ")
-
-            log_step(
-                step=step,
-                action=action_to_str(action),
-                reward=reward,
-                done=done,
-                error=error_msg,
+        try:
+            result = await asyncio.wait_for(
+                env.reset(task_id=task_id, seed=SEED),
+                timeout=60,
             )
 
-            if done:
-                break
+            start_time = asyncio.get_event_loop().time()
+            task_max_steps = int(MAX_STEPS_OVERRIDE) if MAX_STEPS_OVERRIDE else _STEP_BUDGETS.get(task_id, 130)
 
-        score = (
-            result.observation.grade_score
-            if (result and hasattr(result.observation, "grade_score") and result.observation.grade_score is not None)
-            else 0.0
-        )
-        success = score >= SUCCESS_SCORE_THRESHOLD
+            for step in range(1, task_max_steps + 1):
+                if result.done:
+                    break
 
-    except asyncio.TimeoutError:
-        pass
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed > TIMEOUT_SECONDS:
+                    break
 
-    except Exception:
-        pass
+                try:
+                    obs = result.observation
+                    action, messages = get_agent_action(client, messages, obs, step)
 
-    finally:
-        try:
-            if env is not None:
-                await env.close()
+                    chosen_tool = (action.tool_name or "").strip().lower()
+                    if chosen_tool in OBSERVATION_TOOLS:
+                        stagnant_observation_steps += 1
+                    else:
+                        stagnant_observation_steps = 0
+
+                    if stagnant_observation_steps >= MAX_STAGNANT_OBSERVATION_STEPS:
+                        action = build_progress_action(obs, avoid_orders=(order_cooldown_steps > 0))
+                        stagnant_observation_steps = 0
+
+                    result = await asyncio.wait_for(env.step(action), timeout=30)
+                except Exception:
+                    # Robust fallback: keep trajectory moving even if model/tool call fails.
+                    obs = result.observation
+                    action = build_progress_action(obs, avoid_orders=(order_cooldown_steps > 0))
+                    result = await asyncio.wait_for(env.step(action), timeout=30)
+                    stagnant_observation_steps = 0
+
+                raw_reward = extract_step_reward(result)
+                reward = normalize_and_clamp_reward(raw_reward)
+                done = result.done
+                steps_taken = step
+                rewards.append(reward)
+
+                error_msg = None
+                new_obs = result.observation
+                if isinstance(new_obs.tool_result, dict):
+                    error_msg = new_obs.tool_result.get("error")
+                    if error_msg:
+                        error_msg = str(error_msg).replace("\n", " ").replace("\r", " ")
+
+                if error_msg and "monthly cash limit exceeded" in error_msg.lower():
+                    order_cooldown_steps = 3
+                elif order_cooldown_steps > 0:
+                    order_cooldown_steps -= 1
+
+                log_step(
+                    step=step,
+                    action=action_to_str(action),
+                    reward=reward,
+                    done=done,
+                    error=error_msg,
+                )
+
+                if done:
+                    break
+
+            score = (
+                result.observation.grade_score
+                if (result and hasattr(result.observation, "grade_score") and result.observation.grade_score is not None)
+                else 0.0
+            )
+            success = score >= SUCCESS_SCORE_THRESHOLD
+
         except Exception:
             pass
+        finally:
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
-        # Exactly ONE [END] line — env.close() errors are silenced above
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+    try:
+        if env is not None:
+            await env.close()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

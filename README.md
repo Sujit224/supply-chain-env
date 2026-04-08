@@ -39,11 +39,16 @@ pip install -r requirements.txt
 ### 2. Set environment variables
 
 ```bash
-export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxx"
+export OPENAI_API_KEY="sk-xxxxxxxxxxxxxxxxxxxx"
 export API_BASE_URL="https://router.huggingface.co/v1"
 export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export SUPPLY_CHAIN_TASK="easy"   # easy | medium | hard
 ```
+
+Notes:
+- `inference.py` now runs all three tasks (`easy`, `medium`, `hard`) by default.
+- For local debugging, run a single task with:
+  `export SUPPLY_CHAIN_SINGLE_TASK="easy"` (or `medium` / `hard`).
+- Optional compatibility fallback: `API_KEY` or `HF_TOKEN` are also accepted if `OPENAI_API_KEY` is not set.
 
 ### 3. Start the environment server
 
@@ -56,6 +61,11 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```bash
 python inference.py
 ```
+
+This prints three task blocks in required format:
+- `[START] ...`
+- one `[STEP] ...` line per environment step
+- `[END] ...` with `score` in `[0, 1]`
 
 ## Docker
 
@@ -75,7 +85,7 @@ docker run -p 8000:8000 supply_chain_env
 
 ```bash
 export LOCAL_IMAGE_NAME=supply_chain_env
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxx
 python inference.py
 ```
 
@@ -96,8 +106,7 @@ supply_chain_env/
 │   ├── demand_model.py       ← stochastic demand generator
 │   ├── supplier_model.py     ← supplier reliability + pricing
 │   └── mcp_tools.py          ← 12 MCP tool definitions
-└── baseline/
-    └── inference.py          ← multi-task baseline script
+└── inference.py              ← multi-task baseline script (easy/medium/hard by default)
 ```
 
 ## MCP Tools (Action Space)
